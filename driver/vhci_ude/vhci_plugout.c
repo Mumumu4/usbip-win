@@ -8,10 +8,10 @@ abort_pending_req_read(pctx_vusb_t vusb)
 {
 	WDFREQUEST	req_read_pending;
 
-	WdfWaitLockAcquire(vusb->lock, NULL);
+	WdfSpinLockAcquire(vusb->spin_lock);
 	req_read_pending = vusb->pending_req_read;
 	vusb->pending_req_read = NULL;
-	WdfWaitLockRelease(vusb->lock);
+	WdfSpinLockRelease(vusb->spin_lock);
 
 	if (req_read_pending != NULL) {
 		TRD(PLUGIN, "abort read request");
@@ -30,7 +30,7 @@ abort_pending_urbr(purb_req_t urbr)
 static VOID
 abort_all_pending_urbrs(pctx_vusb_t vusb)
 {
-	WdfWaitLockAcquire(vusb->lock, NULL);
+	WdfSpinLockAcquire(vusb->spin_lock);
 
 	while (!IsListEmpty(&vusb->head_urbr)) {
 		purb_req_t	urbr;
@@ -38,14 +38,16 @@ abort_all_pending_urbrs(pctx_vusb_t vusb)
 		urbr = CONTAINING_RECORD(vusb->head_urbr.Flink, urb_req_t, list_all);
 		RemoveEntryListInit(&urbr->list_all);
 		RemoveEntryListInit(&urbr->list_state);
-		WdfWaitLockRelease(vusb->lock);
+		if (!unmark_cancelable_urbr(urbr))
+			continue;
+		WdfSpinLockRelease(vusb->spin_lock);
 
 		abort_pending_urbr(urbr);
 
-		WdfWaitLockAcquire(vusb->lock, NULL);
+		WdfSpinLockAcquire(vusb->spin_lock);
 	}
 
-	WdfWaitLockRelease(vusb->lock);
+	WdfSpinLockRelease(vusb->spin_lock);
 }
 
 static NTSTATUS
@@ -53,15 +55,21 @@ vusb_plugout(pctx_vusb_t vusb)
 {
 	NTSTATUS	status;
 
+	/*
+	 * invalidate first to prevent requests from an upper layer.
+	 * If requests are consistently fed into a vusb about to be plugged out,
+	 * a live deadlock may occur where vusb aborts pending urbs indefinately. 
+	 */
+	vusb->invalid = TRUE;
 	abort_pending_req_read(vusb);
 	abort_all_pending_urbrs(vusb);
 
 	status = UdecxUsbDevicePlugOutAndDelete(vusb->ude_usbdev);
 	if (NT_ERROR(status)) {
+		vusb->invalid = FALSE;
 		TRD(PLUGIN, "failed to plug out: %!STATUS!", status);
 		return status;
 	}
-	vusb->invalid = TRUE;
 	return STATUS_SUCCESS;
 }
 
@@ -72,20 +80,27 @@ plugout_all_vusbs(pctx_vhci_t vhci)
 
 	TRD(PLUGIN, "plugging out all the devices!");
 
-	WdfWaitLockAcquire(vhci->lock, NULL);
+	WdfSpinLockAcquire(vhci->spin_lock);
 	for (i = 0; i < vhci->n_max_ports; i++) {
 		NTSTATUS	status;
 		pctx_vusb_t	vusb = vhci->vusbs[i];
 		if (vusb == NULL)
 			continue;
+
+		vhci->vusbs[i] = VUSB_DELETING;
+		WdfSpinLockRelease(vhci->spin_lock);
+
 		status = vusb_plugout(vusb);
+
+		WdfSpinLockAcquire(vhci->spin_lock);
 		if (NT_ERROR(status)) {
-			WdfWaitLockRelease(vhci->lock);
+			vhci->vusbs[i] = vusb;
+			WdfSpinLockRelease(vhci->spin_lock);
 			return STATUS_UNSUCCESSFUL;
 		}
 		vhci->vusbs[i] = NULL;
 	}
-	WdfWaitLockRelease(vhci->lock);
+	WdfSpinLockRelease(vhci->spin_lock);
 
 	return STATUS_SUCCESS;
 }
@@ -101,23 +116,29 @@ plugout_vusb(pctx_vhci_t vhci, ULONG port)
 
 	TRD(IOCTL, "plugging out device: port: %u", port);
 
-	WdfWaitLockAcquire(vhci->lock, NULL);
+	WdfSpinLockAcquire(vhci->spin_lock);
 
 	vusb = vhci->vusbs[port - 1];
 	if (vusb == NULL) {
 		TRD(PLUGIN, "no matching vusb: port: %u", port);
-		WdfWaitLockRelease(vhci->lock);
+		WdfSpinLockRelease(vhci->spin_lock);
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
+	vhci->vusbs[port - 1] = VUSB_DELETING;
+	WdfSpinLockRelease(vhci->spin_lock);
+
 	status = vusb_plugout(vusb);
+
+	WdfSpinLockAcquire(vhci->spin_lock);
 	if (NT_ERROR(status)) {
-		WdfWaitLockRelease(vhci->lock);
+		vhci->vusbs[port - 1] = vusb;
+		WdfSpinLockRelease(vhci->spin_lock);
 		return STATUS_UNSUCCESSFUL;
 	}
 	vhci->vusbs[port - 1] = NULL;
 
-	WdfWaitLockRelease(vhci->lock);
+	WdfSpinLockRelease(vhci->spin_lock);
 
 	TRD(IOCTL, "completed to plug out: port: %u", port);
 

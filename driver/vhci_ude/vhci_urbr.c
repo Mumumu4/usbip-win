@@ -72,18 +72,18 @@ find_sent_urbr(pctx_vusb_t vusb, struct usbip_header *hdr)
 {
 	PLIST_ENTRY	le;
 
-	WdfWaitLockAcquire(vusb->lock, NULL);
+	WdfSpinLockAcquire(vusb->spin_lock);
 	for (le = vusb->head_urbr_sent.Flink; le != &vusb->head_urbr_sent; le = le->Flink) {
 		purb_req_t	urbr;
 		urbr = CONTAINING_RECORD(le, urb_req_t, list_state);
 		if (urbr->seq_num == hdr->base.seqnum) {
 			RemoveEntryListInit(&urbr->list_all);
 			RemoveEntryListInit(&urbr->list_state);
-			WdfWaitLockRelease(vusb->lock);
+			WdfSpinLockRelease(vusb->spin_lock);
 			return urbr;
 		}
 	}
-	WdfWaitLockRelease(vusb->lock);
+	WdfSpinLockRelease(vusb->spin_lock);
 
 	return NULL;
 }
@@ -166,18 +166,23 @@ urbr_cancelled(_In_ WDFREQUEST req)
 	purb_req_t	urbr = (purb_req_t)WdfRequestGetInformation(req);
 	pctx_vusb_t	vusb = urbr->ep->vusb;
 
-	WdfWaitLockAcquire(vusb->lock, NULL);
+	WdfSpinLockAcquire(vusb->spin_lock);
 	RemoveEntryListInit(&urbr->list_state);
 	RemoveEntryListInit(&urbr->list_all);
 	if (vusb->urbr_sent_partial == urbr) {
 		vusb->urbr_sent_partial = NULL;
 		vusb->len_sent_partial = 0;
 	}
-	WdfWaitLockRelease(vusb->lock);
+	WdfSpinLockRelease(vusb->spin_lock);
 
-	submit_urbr_unlink(urbr->ep, urbr->seq_num);
-	TRD(URBR, "cancelled urbr destroyed: %!URBR!", urbr);
-	complete_urbr(urbr, STATUS_CANCELLED);
+	if (urbr != NULL && urbr->seq_num != 0) {
+		submit_urbr_unlink(urbr->ep, urbr->seq_num);
+		TRD(URBR, "cancelled urbr destroyed: %!URBR!", urbr);
+		complete_urbr(urbr, STATUS_CANCELLED);
+	}
+	else {
+		UdecxUrbCompleteWithNtStatus(req, STATUS_CANCELLED);
+	}
 }
 
 NTSTATUS
@@ -187,15 +192,20 @@ submit_urbr(purb_req_t urbr)
 	WDFREQUEST	req_read;
 	NTSTATUS	status = STATUS_PENDING;
 
-	WdfWaitLockAcquire(vusb->lock, NULL);
+	WdfSpinLockAcquire(vusb->spin_lock);
 
 	if (vusb->urbr_sent_partial || vusb->pending_req_read == NULL) {
 		if (urbr->type == URBR_TYPE_URB) {
-			WdfRequestMarkCancelable(urbr->req, urbr_cancelled);
+			status = WdfRequestMarkCancelableEx(urbr->req, urbr_cancelled);
+			if (NT_ERROR(status)) {
+				WdfSpinLockRelease(vusb->spin_lock);
+				TRD(URBR, "failed to go pending. Already cancelled?: %!URBR!, %!STATUS!", urbr, status);
+				return STATUS_CANCELLED;
+			}
 		}
 		InsertTailList(&vusb->head_urbr_pending, &urbr->list_state);
 		InsertTailList(&vusb->head_urbr, &urbr->list_all);
-		WdfWaitLockRelease(vusb->lock);
+		WdfSpinLockRelease(vusb->spin_lock);
 
 		TRD(URBR, "urb pending: %!URBR!", urbr);
 		return STATUS_PENDING;
@@ -206,15 +216,21 @@ submit_urbr(purb_req_t urbr)
 
 	urbr->seq_num = ++(vusb->seq_num);
 
-	WdfWaitLockRelease(vusb->lock);
+	WdfSpinLockRelease(vusb->spin_lock);
 
 	status = store_urbr(req_read, urbr);
+	TRD(URBR, "After 'store_urbu()");
 
-	WdfWaitLockAcquire(vusb->lock, NULL);
+	WdfSpinLockAcquire(vusb->spin_lock);
 
 	if (status == STATUS_SUCCESS) {
 		if (urbr->type == URBR_TYPE_URB) {
-			WdfRequestMarkCancelable(urbr->req, urbr_cancelled);
+			status = WdfRequestMarkCancelableEx(urbr->req, urbr_cancelled);
+			if (NT_ERROR(status)) {
+				WdfSpinLockRelease(vusb->spin_lock);
+				TRD(URBR, "Already cancelled request?: %!URBR!, %!STATUS!", urbr, status);
+				return STATUS_CANCELLED;
+			}
 		}
 		if (vusb->len_sent_partial == 0) {
 			vusb->urbr_sent_partial = NULL;
@@ -224,7 +240,7 @@ submit_urbr(purb_req_t urbr)
 		InsertTailList(&vusb->head_urbr, &urbr->list_all);
 
 		vusb->pending_req_read = NULL;
-		WdfWaitLockRelease(vusb->lock);
+		WdfSpinLockRelease(vusb->spin_lock);
 
 		WdfRequestUnmarkCancelable(req_read);
 		WdfRequestComplete(req_read, STATUS_SUCCESS);
@@ -232,7 +248,7 @@ submit_urbr(purb_req_t urbr)
 	}
 	else {
 		vusb->urbr_sent_partial = NULL;
-		WdfWaitLockRelease(vusb->lock);
+		WdfSpinLockRelease(vusb->spin_lock);
 
 		status = STATUS_INVALID_PARAMETER;
 	}
@@ -294,6 +310,23 @@ submit_req_reset_pipe(pctx_ep_t ep, WDFREQUEST req)
 	return submit_urbr_free(urbr);
 }
 
+BOOLEAN
+unmark_cancelable_urbr(purb_req_t urbr)
+{
+	WDFREQUEST	req;
+	NTSTATUS	status;
+
+	req = urbr->req;
+	if (req == NULL)
+		return TRUE;
+	if (urbr->type != URBR_TYPE_URB)
+		return TRUE;
+	status = WdfRequestUnmarkCancelable(req);
+	if (status == STATUS_CANCELLED)
+		return FALSE;
+	return TRUE;
+}
+
 void
 complete_urbr(purb_req_t urbr, NTSTATUS status)
 {
@@ -304,12 +337,11 @@ complete_urbr(purb_req_t urbr, NTSTATUS status)
 		if (urbr->type != URBR_TYPE_URB)
 			WdfRequestComplete(req, status);
 		else {
-			if (status != STATUS_CANCELLED)
-				WdfRequestUnmarkCancelable(req);
 			if (status == STATUS_SUCCESS)
 				UdecxUrbComplete(req, urbr->u.urb->UrbHeader.Status);
-			else 
+			else {
 				UdecxUrbCompleteWithNtStatus(req, status);
+			}
 		}
 	}
 	free_urbr(urbr);

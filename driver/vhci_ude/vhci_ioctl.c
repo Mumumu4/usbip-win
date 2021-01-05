@@ -18,7 +18,7 @@ get_ports_status(pctx_vhci_t vhci, ioctl_usbip_vhci_get_ports_status *ports_stat
 
 	RtlZeroMemory(ports_status, sizeof(ioctl_usbip_vhci_get_ports_status));
 
-	WdfWaitLockAcquire(vhci->lock, NULL);
+	WdfSpinLockAcquire(vhci->spin_lock);
 
 	for (i = 0; i != vhci->n_max_ports; i++) {
 		pctx_vusb_t	vusb = vhci->vusbs[i];
@@ -28,7 +28,7 @@ get_ports_status(pctx_vhci_t vhci, ioctl_usbip_vhci_get_ports_status *ports_stat
 		}
 	}
 
-	WdfWaitLockRelease(vhci->lock);
+	WdfSpinLockRelease(vhci->spin_lock);
 
 	ports_status->n_used_ports = n_used_ports;
 
@@ -63,11 +63,11 @@ get_imported_devices(pctx_vhci_t vhci, pioctl_usbip_vhci_imported_dev_t idevs, U
 
 	TRD(IOCTL, "Enter\n");
 
-	WdfWaitLockAcquire(vhci->lock, NULL);
+	WdfSpinLockAcquire(vhci->spin_lock);
 
 	for (i = 0; i != vhci->n_max_ports && n_idevs < n_idevs_max - 1; i++) {
 		pctx_vusb_t	vusb = vhci->vusbs[i];
-		if (vusb != NULL) {
+		if (VUSB_IS_VALID(vusb)) {
 			idev->port = (CHAR)(i + 1);
 			idev->status = 2; /* SDEV_ST_USED */;
 			idev->vendor = vusb->id_vendor;
@@ -77,7 +77,7 @@ get_imported_devices(pctx_vhci_t vhci, pioctl_usbip_vhci_imported_dev_t idevs, U
 		}
 	}
 
-	WdfWaitLockRelease(vhci->lock);
+	WdfSpinLockRelease(vhci->spin_lock);
 
 	idev->port = 0xff; /* end of mark */
 

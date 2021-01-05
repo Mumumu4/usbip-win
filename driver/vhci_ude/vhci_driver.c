@@ -17,10 +17,13 @@ cleanup_vhci(_In_ WDFOBJECT drvobj)
 static PAGEABLE VOID
 driver_unload(_In_ WDFDRIVER drvobj)
 {
-	UNREFERENCED_PARAMETER(drvobj);
-
+	PAGED_CODE();
 	TRD(DRIVER, "Enter");
+
+	WPP_CLEANUP(WdfDriverWdmGetDriverObject((WDFDRIVER)drvobj));
 }
+
+DRIVER_INITIALIZE DriverEntry;
 
 INITABLE NTSTATUS
 DriverEntry(_In_ PDRIVER_OBJECT drvobj, _In_ PUNICODE_STRING regpath)
@@ -29,6 +32,7 @@ DriverEntry(_In_ PDRIVER_OBJECT drvobj, _In_ PUNICODE_STRING regpath)
 	NTSTATUS		status;
 	WDF_OBJECT_ATTRIBUTES	attrs;
 
+	PAGED_CODE();
 	WPP_INIT_TRACING(drvobj, regpath);
 
 	TRD(DRIVER, "Enter");

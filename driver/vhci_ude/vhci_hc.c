@@ -5,7 +5,7 @@
 
 #include "usbip_vhci_api.h"
 
-extern VOID create_queue_hc(pctx_vhci_t vhci);
+extern NTSTATUS create_queue_hc(pctx_vhci_t vhci);
 
 static NTSTATUS
 controller_query_usb_capability(WDFDEVICE UdecxWdfDevice, PGUID CapabilityType,
@@ -36,6 +36,8 @@ create_ucx_controller(WDFDEVICE hdev)
 	UDECX_WDF_DEVICE_CONFIG	conf;
 	NTSTATUS	status;
 
+	PAGED_CODE();
+
 	UDECX_WDF_DEVICE_CONFIG_INIT(&conf, controller_query_usb_capability);
 	conf.EvtUdecxWdfDeviceReset = controller_reset;
 	/* conf.NumberOfUsb30Ports=1 by UDECX_WDF_DEVICE_CONFIG_INIT */
@@ -56,6 +58,8 @@ setup_fileobject(PWDFDEVICE_INIT dinit)
 	WDF_OBJECT_ATTRIBUTES	attrs;
 	WDF_FILEOBJECT_CONFIG	conf;
 
+	PAGED_CODE();
+
 	WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attrs, pctx_vusb_t);
 	WDF_FILEOBJECT_CONFIG_INIT(&conf, NULL, NULL, NULL);
 	WdfDeviceInitSetFileObjectConfig(dinit, &conf, &attrs);
@@ -65,6 +69,8 @@ static PAGEABLE VOID
 reg_devintf(WDFDEVICE hdev)
 {
 	NTSTATUS	status;
+
+	PAGED_CODE();
 
 	status = WdfDeviceCreateDeviceInterface(hdev, &GUID_DEVINTERFACE_VHCI_USBIP, NULL);
 	if (NT_ERROR(status)) {
@@ -84,14 +90,14 @@ setup_vhci(pctx_vhci_t vhci)
 
 	WDF_OBJECT_ATTRIBUTES_INIT(&attrs);
 	attrs.ParentObject = vhci->hdev;
-	status = WdfWaitLockCreate(&attrs, &vhci->lock);
+	status = WdfSpinLockCreate(&attrs, &vhci->spin_lock);
 	if (NT_ERROR(status)) {
-		TRE(VHCI, "failed to create wait lock: %!STATUS!", status);
+		TRE(VHCI, "failed to create spin lock: %!STATUS!", status);
 		return FALSE;
 	}
 	vhci->n_max_ports = MAX_HUB_PORTS;
 
-	vhci->vusbs = ExAllocatePoolWithTag(PagedPool, sizeof(pctx_vusb_t) * vhci->n_max_ports, VHCI_POOLTAG);
+	vhci->vusbs = ExAllocatePoolWithTag(NonPagedPool, sizeof(pctx_vusb_t) * vhci->n_max_ports, VHCI_POOLTAG);
 	if (vhci->vusbs == NULL) {
 		TRE(VHCI, "failed to allocate ports: out of memory");
 		return FALSE;
@@ -99,6 +105,18 @@ setup_vhci(pctx_vhci_t vhci)
 	RtlZeroMemory(vhci->vusbs, sizeof(pctx_vusb_t) * vhci->n_max_ports);
 
 	return TRUE;
+}
+
+static VOID
+vhci_cleanup(_In_ WDFOBJECT hdev)
+{
+	pctx_vhci_t vhci;
+
+	TRD(VHCI, "Enter");
+
+	vhci = TO_VHCI(hdev);
+	if (vhci->vusbs != NULL)
+		ExFreePoolWithTag(vhci->vusbs, VHCI_POOLTAG);
 }
 
 PAGEABLE NTSTATUS
@@ -124,11 +142,15 @@ evt_add_vhci(_In_ WDFDRIVER drv, _Inout_ PWDFDEVICE_INIT dinit)
 	setup_fileobject(dinit);
 
 	WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attrs, ctx_vhci_t);
+	attrs.EvtCleanupCallback = vhci_cleanup;
 	status = WdfDeviceCreate(&dinit, &attrs, &hdev);
 	if (!NT_SUCCESS(status)) {
 		TRE(VHCI, "failed to create wdf device: %!STATUS!", status);
 		goto out;
 	}
+
+	vhci = TO_VHCI(hdev);
+	vhci->vusbs = NULL;
 
 	if (!create_ucx_controller(hdev)) {
 		status = STATUS_UNSUCCESSFUL;
@@ -137,14 +159,13 @@ evt_add_vhci(_In_ WDFDRIVER drv, _Inout_ PWDFDEVICE_INIT dinit)
 
 	reg_devintf(hdev);
 
-	vhci = TO_VHCI(hdev);
 	vhci->hdev = hdev;
-	if (!setup_vhci(vhci))
+	if (!setup_vhci(vhci)) {
+		status = STATUS_UNSUCCESSFUL;
 		goto out;
+	}
 
-	create_queue_hc(vhci);
-
-	status = STATUS_SUCCESS;
+	status = create_queue_hc(vhci);
 out:
 	TRD(VHCI, "Leave: %!STATUS!", status);
 

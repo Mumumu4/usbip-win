@@ -15,7 +15,7 @@ io_default_hc(_In_ WDFQUEUE queue, _In_ WDFREQUEST req)
 	TRE(QUEUE_HC, "unexpected io default callback");
 }
 
-PAGEABLE VOID
+PAGEABLE NTSTATUS
 create_queue_hc(pctx_vhci_t vhci)
 {
 	WDFQUEUE	queue;
@@ -33,7 +33,7 @@ create_queue_hc(pctx_vhci_t vhci)
 
 	WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attrs, pctx_vhci_t);
 	attrs.SynchronizationScope = WdfSynchronizationScopeQueue;
-
+	attrs.ExecutionLevel = WdfExecutionLevelPassive;
 	status = WdfIoQueueCreate(vhci->hdev, &conf, &attrs, &queue);
 	if (NT_SUCCESS(status)) {
 		*TO_PVHCI(queue) = vhci;
@@ -42,4 +42,5 @@ create_queue_hc(pctx_vhci_t vhci)
 	else {
 		TRE(QUEUE_HC, "failed to create queue: %!STATUS!", status);
 	}
+	return status;
 }
