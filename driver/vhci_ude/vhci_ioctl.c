@@ -5,14 +5,11 @@
 
 NTSTATUS
 plugin_vusb(pctx_vhci_t vhci, WDFREQUEST req, pvhci_pluginfo_t pluginfo);
-NTSTATUS
-plugout_vusb(pctx_vhci_t vhci, ULONG port);
 
 static VOID
 get_ports_status(pctx_vhci_t vhci, ioctl_usbip_vhci_get_ports_status *ports_status)
 {
 	ULONG	i;
-	unsigned char	n_used_ports = 0;
 
 	TRD(IOCTL, "Enter\n");
 
@@ -24,13 +21,12 @@ get_ports_status(pctx_vhci_t vhci, ioctl_usbip_vhci_get_ports_status *ports_stat
 		pctx_vusb_t	vusb = vhci->vusbs[i];
 		if (vusb != NULL) {
 			ports_status->port_status[i] = 1;
-			n_used_ports++;
 		}
 	}
 
 	WdfSpinLockRelease(vhci->spin_lock);
 
-	ports_status->n_used_ports = n_used_ports;
+	ports_status->n_max_ports = (UCHAR)vhci->n_max_ports;
 
 	TRD(IOCTL, "Leave\n");
 }
@@ -68,7 +64,7 @@ get_imported_devices(pctx_vhci_t vhci, pioctl_usbip_vhci_imported_dev_t idevs, U
 	for (i = 0; i != vhci->n_max_ports && n_idevs < n_idevs_max - 1; i++) {
 		pctx_vusb_t	vusb = vhci->vusbs[i];
 		if (VUSB_IS_VALID(vusb)) {
-			idev->port = (CHAR)(i + 1);
+			idev->port = (CHAR)i;
 			idev->status = 2; /* SDEV_ST_USED */;
 			idev->vendor = vusb->id_vendor;
 			idev->product = vusb->id_product;
@@ -132,7 +128,7 @@ ioctl_plugin_vusb(WDFQUEUE queue, WDFREQUEST req, size_t inlen)
 		return STATUS_INVALID_PARAMETER;
 	}
 	vhci = *TO_PVHCI(queue);
-	if (pluginfo->port < 0 || (ULONG)pluginfo->port > vhci->n_max_ports)
+	if (pluginfo->port < 0 || (ULONG)pluginfo->port >= vhci->n_max_ports)
 		return STATUS_INVALID_PARAMETER;
 	return plugin_vusb(vhci, req, pluginfo);
 }
@@ -142,7 +138,7 @@ ioctl_plugout_vusb(WDFQUEUE queue, WDFREQUEST req, size_t inlen)
 {
 	pvhci_unpluginfo_t	unpluginfo;
 	pctx_vhci_t	vhci;
-	ULONG		port;
+	CHAR		port;
 	NTSTATUS	status;
 
 	if (inlen != sizeof(ioctl_usbip_vhci_unplug)) {
@@ -156,9 +152,9 @@ ioctl_plugout_vusb(WDFQUEUE queue, WDFREQUEST req, size_t inlen)
 		return status;
 	}
 
-	port = (ULONG)unpluginfo->addr;
+	port = unpluginfo->addr;
 	vhci = *TO_PVHCI(queue);
-	if (port != 0 && port >= vhci->n_max_ports)
+	if (port >= (CHAR)vhci->n_max_ports)
 		return STATUS_INVALID_PARAMETER;
 
 	return plugout_vusb(vhci, port);

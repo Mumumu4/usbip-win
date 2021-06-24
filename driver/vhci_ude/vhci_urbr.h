@@ -4,7 +4,7 @@
 #include <wdf.h>
 #include <usbdi.h>
 
-#include "usb_cspkt.h"
+#include "usb_util.h"
 
 #include "vhci_dev.h"
 
@@ -22,7 +22,10 @@ typedef struct _urb_req {
 	urbr_type_t	type;
 	unsigned long	seq_num;
 	union {
-		PURB	urb;
+		struct {
+			PURB	urb;
+			BOOLEAN	cancelable;
+		} urb;
 		unsigned long	seq_num_unlink;
 		UCHAR	conf_value;
 		struct {

@@ -95,7 +95,7 @@ store_urbr_urb(WDFREQUEST req_read, purb_req_t urbr)
 	USHORT		urb_func;
 	NTSTATUS	status;
 
-	urb_func = urbr->u.urb->UrbHeader.Function;
+	urb_func = urbr->u.urb.urb->UrbHeader.Function;
 	TRD(READ, "%!URBR!", urbr);
 
 	switch (urb_func) {

@@ -63,7 +63,6 @@ dbg_namecode_buf_len(namecode_my_t *namecodes, const char *codetype, unsigned in
 static namecode_my_t	namecodes_vhci_ioctl[] = {
 	K_V(IOCTL_USBIP_VHCI_PLUGIN_HARDWARE)
 	K_V(IOCTL_USBIP_VHCI_UNPLUG_HARDWARE)
-	K_V(IOCTL_USBIP_VHCI_EJECT_HARDWARE)
 	K_V(IOCTL_USBIP_VHCI_GET_PORTS_STATUS)
 	K_V(IOCTL_USBIP_VHCI_GET_IMPORTED_DEVICES)
 	K_V(IOCTL_INTERNAL_USB_CYCLE_PORT)
@@ -200,7 +199,7 @@ dbg_urbr(purb_req_t urbr)
 	else {
 		switch (urbr->type) {
 		case URBR_TYPE_URB:
-			len_dbg_urbr = libdrv_snprintf(buf_dbg_urbr, 128, "[urb,seq:%u,%s]", urbr->seq_num, dbg_urbfunc(urbr->u.urb->UrbHeader.Function));
+			len_dbg_urbr = libdrv_snprintf(buf_dbg_urbr, 128, "[urb,seq:%u,%s]", urbr->seq_num, dbg_urbfunc(urbr->u.urb.urb->UrbHeader.Function));
 			break;
 		case URBR_TYPE_UNLINK:
 			len_dbg_urbr = libdrv_snprintf(buf_dbg_urbr, 128, "[ulk,seq:%u,%u]", urbr->seq_num, urbr->u.seq_num_unlink);

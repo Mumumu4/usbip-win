@@ -171,27 +171,11 @@ vhub_mark_unplugged_all_vpdos(pvhub_dev_t vhub)
 	ExReleaseFastMutex(&vhub->Mutex);
 }
 
-PAGEABLE void
-vhub_eject_all_vpdos(pvhub_dev_t vhub)
-{
-	PLIST_ENTRY	entry;
-
-	ExAcquireFastMutex(&vhub->Mutex);
-
-	for (entry = vhub->head_vpdo.Flink; entry != &vhub->head_vpdo; entry = entry->Flink) {
-		pvpdo_dev_t	vpdo = CONTAINING_RECORD(entry, vpdo_dev_t, Link);
-
-		IoRequestDeviceEject(vpdo->common.Self);
-	}
-	ExReleaseFastMutex(&vhub->Mutex);
-}
-
 PAGEABLE NTSTATUS
 vhub_get_ports_status(pvhub_dev_t vhub, ioctl_usbip_vhci_get_ports_status *st)
 {
 	pvpdo_dev_t	vpdo;
 	PLIST_ENTRY	entry;
-	unsigned char	n_used_ports = 0;
 
 	PAGED_CODE();
 
@@ -202,16 +186,15 @@ vhub_get_ports_status(pvhub_dev_t vhub, ioctl_usbip_vhci_get_ports_status *st)
 
 	for (entry = vhub->head_vpdo.Flink; entry != &vhub->head_vpdo; entry = entry->Flink) {
 		vpdo = CONTAINING_RECORD (entry, vpdo_dev_t, Link);
-		if (vpdo->port > 127 || vpdo->port == 0) {
-			DBGE(DBG_VHUB, "strange error");
+		if (vpdo->port >= 127) {
+			DBGE(DBG_VHUB, "strange port");
 			continue;
 		}
-		n_used_ports++;
-		st->port_status[vpdo->port - 1] = 1;
+		st->port_status[vpdo->port] = 1;
 	}
 	ExReleaseFastMutex(&vhub->Mutex);
 
-	st->n_used_ports = n_used_ports;
+	st->n_max_ports = 127;
 	return STATUS_SUCCESS;
 }
 
